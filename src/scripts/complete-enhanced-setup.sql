@@ -104,63 +104,33 @@ export const messageOperations = {
 
   async getPrivateMessages(chatId: number, userId: number): Promise<Message[]> {
     try {
-      console.log("Fetching private messages for chat:", chatId, "user:", userId)
-
-      // First, check if receiver_id column exists
-      const [columns] = await pool.execute("SHOW COLUMNS FROM messages LIKE 'receiver_id'")
-      const hasReceiverColumn = (columns as any[]).length > 0
-
-      let query: string
-      if (hasReceiverColumn) {
-        // Use receiver_id if it exists
-        query = `
-          SELECT 
-            m.id,
-            m.content,
-            m.userId,
-            m.receiver_id as receiverId,
-            m.messageType,
-            m.isRead,
-            m.createdAt,
-            m.updatedAt,
-            m.fileInfo,
-            COALESCE(u.username, 'Unknown User') as username
-          FROM messages m 
-          LEFT JOIN users u ON m.userId = u.id 
-          WHERE m.private_chat_id = ? AND (m.userId = ? OR m.receiver_id = ?)
-          ORDER BY m.createdAt ASC 
-          LIMIT 100
+      const [rows] = await pool.execute(
         `
-      } else {
-        // Fallback query without receiver_id
-        query = `
-          SELECT 
-            m.id,
-            m.content,
-            m.userId,
-            NULL as receiverId,
-            m.messageType,
-            m.isRead,
-            m.createdAt,
-            m.updatedAt,
-            m.fileInfo,
-            COALESCE(u.username, 'Unknown User') as username
-          FROM messages m 
-          LEFT JOIN users u ON m.userId = u.id 
-          WHERE m.private_chat_id = ? AND m.userId = ?
-          ORDER BY m.createdAt ASC 
-          LIMIT 100
-        `
-      }
-
-      const [rows] = await pool.execute(query, hasReceiverColumn ? [chatId, userId, userId] : [chatId, userId])
+        SELECT 
+          m.id,
+          m.content,
+          m.userId,
+          m.receiverId,
+          m.messageType,
+          m.isRead,
+          m.createdAt,
+          m.updatedAt,
+          m.fileInfo,
+          COALESCE(u.username, 'Unknown User') as username
+        FROM messages m 
+        LEFT JOIN users u ON m.userId = u.id 
+        WHERE m.private_chat_id = ? AND (m.userId = ? OR m.receiverId = ?)
+        ORDER BY m.createdAt ASC 
+        LIMIT 100
+      `,
+        [chatId, userId, userId],
+      )
 
       const messages = (rows as any[]).map((row) => ({
         ...row,
         fileInfo: row.fileInfo ? JSON.parse(row.fileInfo) : null,
       }))
 
-      console.log("Private messages fetched:", messages.length)
       return messages as Message[]
     } catch (error) {
       console.error("Error fetching private messages:", error)
@@ -221,78 +191,31 @@ export const messageOperations = {
     fileInfo?: any,
   ): Promise<Message> {
     try {
-      console.log("Creating private message:", {
-        content,
-        userId,
-        receiverId,
-        chatId,
-        messageType,
-        fileInfo,
-      })
+      const [result] = await pool.execute(
+        "INSERT INTO messages (content, userId, receiverId, messageType, isRead, fileInfo, chat_type, private_chat_id, createdAt, updatedAt) VALUES (?, ?, ?, ?, false, ?, 'private', ?, NOW(), NOW())",
+        [content, userId, receiverId, messageType, fileInfo ? JSON.stringify(fileInfo) : null, chatId],
+      )
 
-      // Check if receiver_id column exists
-      const [columns] = await pool.execute("SHOW COLUMNS FROM messages LIKE 'receiver_id'")
-      const hasReceiverColumn = (columns as any[]).length > 0
-
-      let insertQuery: string
-      let insertParams: any[]
-
-      if (hasReceiverColumn) {
-        insertQuery =
-          "INSERT INTO messages (content, userId, receiver_id, messageType, isRead, fileInfo, chat_type, private_chat_id, createdAt, updatedAt) VALUES (?, ?, ?, ?, false, ?, 'private', ?, NOW(), NOW())"
-        insertParams = [content, userId, receiverId, messageType, fileInfo ? JSON.stringify(fileInfo) : null, chatId]
-      } else {
-        // Fallback without receiver_id
-        insertQuery =
-          "INSERT INTO messages (content, userId, messageType, isRead, fileInfo, chat_type, private_chat_id, createdAt, updatedAt) VALUES (?, ?, ?, false, ?, 'private', ?, NOW(), NOW())"
-        insertParams = [content, userId, messageType, fileInfo ? JSON.stringify(fileInfo) : null, chatId]
-      }
-
-      const [result] = await pool.execute(insertQuery, insertParams)
       const insertResult = result as mysql.ResultSetHeader
-      console.log("Private message inserted with ID:", insertResult.insertId)
-
-      // Fetch the created message
-      let selectQuery: string
-      if (hasReceiverColumn) {
-        selectQuery = `
-          SELECT 
-            m.id,
-            m.content,
-            m.userId,
-            m.receiver_id as receiverId,
-            m.messageType,
-            m.isRead,
-            m.createdAt,
-            m.updatedAt,
-            m.fileInfo,
-            COALESCE(u.username, 'Unknown User') as username
-          FROM messages m 
-          LEFT JOIN users u ON m.userId = u.id 
-          WHERE m.id = ?
-        `
-      } else {
-        selectQuery = `
-          SELECT 
-            m.id,
-            m.content,
-            m.userId,
-            ? as receiverId,
-            m.messageType,
-            m.isRead,
-            m.createdAt,
-            m.updatedAt,
-            m.fileInfo,
-            COALESCE(u.username, 'Unknown User') as username
-          FROM messages m 
-          LEFT JOIN users u ON m.userId = u.id 
-          WHERE m.id = ?
-        `
-      }
 
       const [rows] = await pool.execute(
-        selectQuery,
-        hasReceiverColumn ? [insertResult.insertId] : [receiverId, insertResult.insertId],
+        `
+        SELECT 
+          m.id,
+          m.content,
+          m.userId,
+          m.receiverId,
+          m.messageType,
+          m.isRead,
+          m.createdAt,
+          m.updatedAt,
+          m.fileInfo,
+          COALESCE(u.username, 'Unknown User') as username
+        FROM messages m 
+        LEFT JOIN users u ON m.userId = u.id 
+        WHERE m.id = ?
+      `,
+        [insertResult.insertId],
       )
 
       const message = (rows as any[])[0]
@@ -300,7 +223,6 @@ export const messageOperations = {
         message.fileInfo = JSON.parse(message.fileInfo)
       }
 
-      console.log("Private message created successfully:", message)
       return message as Message
     } catch (error) {
       console.error("Error creating private message:", error)
@@ -324,9 +246,7 @@ export const messageOperations = {
 export const privateChatOperations = {
   async createOrGetChat(user1Id: number, user2Id: number): Promise<any> {
     try {
-      console.log("Creating or getting chat between users:", user1Id, "and", user2Id)
-
-      // Check if chat already exists (check both directions)
+      // Check if chat already exists
       const [existing] = await pool.execute(
         "SELECT * FROM private_chats WHERE (user1_id = ? AND user2_id = ?) OR (user1_id = ? AND user2_id = ?)",
         [user1Id, user2Id, user2Id, user1Id],
@@ -334,8 +254,6 @@ export const privateChatOperations = {
 
       if ((existing as any[]).length > 0) {
         const chat = (existing as any[])[0]
-        console.log("Found existing chat:", chat.id)
-
         // Get other user info
         const otherUserId = chat.user1_id === user1Id ? chat.user2_id : chat.user1_id
         const [userRows] = await pool.execute(
@@ -351,25 +269,18 @@ export const privateChatOperations = {
         }
       }
 
-      // Create new chat (always store with smaller ID first for consistency)
-      const smallerId = Math.min(user1Id, user2Id)
-      const largerId = Math.max(user1Id, user2Id)
-
-      console.log("Creating new chat between:", smallerId, "and", largerId)
-
+      // Create new chat
       const [result] = await pool.execute(
         "INSERT INTO private_chats (user1_id, user2_id, created_at, updated_at) VALUES (?, ?, NOW(), NOW())",
-        [smallerId, largerId],
+        [Math.min(user1Id, user2Id), Math.max(user1Id, user2Id)],
       )
 
       const insertResult = result as mysql.ResultSetHeader
-      console.log("New chat created with ID:", insertResult.insertId)
 
       // Get other user info
-      const otherUserId = user1Id === smallerId ? largerId : smallerId
       const [userRows] = await pool.execute(
         "SELECT id, username, email, avatar, isOnline, lastSeen FROM users WHERE id = ?",
-        [otherUserId],
+        [user2Id],
       )
       const otherUser = (userRows as any[])[0]
 
@@ -386,8 +297,6 @@ export const privateChatOperations = {
 
   async getUserChats(userId: number): Promise<any[]> {
     try {
-      console.log("Fetching chats for user:", userId)
-
       const [rows] = await pool.execute(
         `
         SELECT 
@@ -397,9 +306,7 @@ export const privateChatOperations = {
           u.email as other_email,
           u.avatar as other_avatar,
           u.isOnline as other_online,
-          u.lastSeen as other_last_seen,
-          (SELECT content FROM messages WHERE private_chat_id = pc.id ORDER BY createdAt DESC LIMIT 1) as last_message,
-          (SELECT createdAt FROM messages WHERE private_chat_id = pc.id ORDER BY createdAt DESC LIMIT 1) as last_message_time
+          u.lastSeen as other_last_seen
         FROM private_chats pc
         LEFT JOIN users u ON (
           CASE 
@@ -408,12 +315,12 @@ export const privateChatOperations = {
           END = u.id
         )
         WHERE pc.user1_id = ? OR pc.user2_id = ?
-        ORDER BY last_message_time DESC, pc.updated_at DESC
+        ORDER BY pc.updated_at DESC
       `,
         [userId, userId, userId],
       )
 
-      const chats = (rows as any[]).map((row) => ({
+      return (rows as any[]).map((row) => ({
         id: row.id,
         otherUser: {
           id: row.other_user_id,
@@ -423,13 +330,8 @@ export const privateChatOperations = {
           isOnline: row.other_online,
           lastSeen: row.other_last_seen,
         },
-        lastMessage: row.last_message,
-        lastMessageTime: row.last_message_time,
         unreadCount: 0, // TODO: Calculate actual unread count
       }))
-
-      console.log("User chats fetched:", chats.length)
-      return chats
     } catch (error) {
       console.error("Error fetching user chats:", error)
       throw error
