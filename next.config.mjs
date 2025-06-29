@@ -3,23 +3,21 @@ const nextConfig = {
   experimental: {
     serverComponentsExternalPackages: ['mysql2']
   },
-  env: {
-    DB_HOST: process.env.DB_HOST,
-    DB_PORT: process.env.DB_PORT,
-    DB_USER: process.env.DB_USER,
-    DB_PASSWORD: process.env.DB_PASSWORD,
-    DB_NAME: process.env.DB_NAME,
-  },
+  
   // Optimize for production
   compress: true,
   poweredByHeader: false,
   generateEtags: false,
+  
+  // Handle build errors gracefully for deployment
   eslint: {
     ignoreDuringBuilds: true,
   },
   typescript: {
     ignoreBuildErrors: true,
   },
+  
+  // Optimize images for Vercel
   images: {
     unoptimized: true,
   },
