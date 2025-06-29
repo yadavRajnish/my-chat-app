@@ -1,6 +1,6 @@
 import mysql from "mysql2/promise"
 
-// Create connection pool
+// Create connection pool with cleaner configuration for free database services
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
   port: Number.parseInt(process.env.DB_PORT || "3306"),
@@ -8,8 +8,10 @@ const pool = mysql.createPool({
   password: process.env.DB_PASSWORD || "",
   database: process.env.DB_NAME || "chatapp",
   waitForConnections: true,
-  connectionLimit: 10,
+  connectionLimit: 5, // Reduced for free tier
   queueLimit: 0,
+  ssl: false,
+  charset: "utf8mb4",
 })
 
 export interface Message {
@@ -29,7 +31,7 @@ export interface User {
   email: string
   password: string
   isOnline: boolean
-  lastSeen: string
+  lastSeen: string | null
   createdAt: string
   updatedAt: string
 }
@@ -42,7 +44,7 @@ export interface Session {
   expiresAt: string
 }
 
-// Message operations
+// Message operations (with manual timestamp handling)
 export const messageOperations = {
   async getAll(): Promise<Message[]> {
     try {
@@ -74,7 +76,7 @@ export const messageOperations = {
     try {
       console.log("Creating message:", { content, userId, messageType })
 
-      // Insert message without username (it comes from JOIN)
+      // Manual timestamp handling for strict SQL mode
       const [result] = await pool.execute(
         "INSERT INTO messages (content, userId, messageType, isRead, createdAt, updatedAt) VALUES (?, ?, ?, false, NOW(), NOW())",
         [content, userId, messageType],
@@ -83,7 +85,6 @@ export const messageOperations = {
       const insertResult = result as mysql.ResultSetHeader
       console.log("Message inserted with ID:", insertResult.insertId)
 
-      // Fetch the created message with username from JOIN
       const [rows] = await pool.execute(
         `
         SELECT 
@@ -112,7 +113,7 @@ export const messageOperations = {
   },
 
   async markAsRead(messageId: number): Promise<void> {
-    await pool.execute("UPDATE messages SET isRead = true WHERE id = ?", [messageId])
+    await pool.execute("UPDATE messages SET isRead = true, updatedAt = NOW() WHERE id = ?", [messageId])
   },
 
   async getUnreadCount(userId: number): Promise<number> {
@@ -123,7 +124,7 @@ export const messageOperations = {
   },
 }
 
-// User operations
+// User operations (with manual timestamp handling)
 export const userOperations = {
   async getAll(): Promise<Omit<User, "password">[]> {
     const [rows] = await pool.execute(
@@ -133,6 +134,7 @@ export const userOperations = {
   },
 
   async create(username: string, email: string, password: string): Promise<Omit<User, "password">> {
+    // Manual timestamp handling for strict SQL mode
     const [result] = await pool.execute(
       "INSERT INTO users (username, email, password, isOnline, lastSeen, createdAt, updatedAt) VALUES (?, ?, ?, false, NOW(), NOW(), NOW())",
       [username, email, password],
@@ -163,16 +165,20 @@ export const userOperations = {
   },
 
   async updateOnlineStatus(userId: number, isOnline: boolean): Promise<void> {
-    await pool.execute("UPDATE users SET isOnline = ?, lastSeen = NOW() WHERE id = ?", [isOnline, userId])
+    await pool.execute("UPDATE users SET isOnline = ?, lastSeen = NOW(), updatedAt = NOW() WHERE id = ?", [
+      isOnline,
+      userId,
+    ])
   },
 }
 
-// Session operations
+// Session operations (with manual timestamp handling)
 export const sessionOperations = {
   async create(userId: number, username: string): Promise<Session> {
     const sessionId = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15)
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000) // 24 hours
 
+    // Manual timestamp handling for strict SQL mode
     await pool.execute("INSERT INTO sessions (id, userId, username, createdAt, expiresAt) VALUES (?, ?, ?, NOW(), ?)", [
       sessionId,
       userId,
@@ -185,17 +191,43 @@ export const sessionOperations = {
   },
 
   async findById(sessionId: string): Promise<Session | null> {
-    const [rows] = await pool.execute("SELECT * FROM sessions WHERE id = ? AND expiresAt > NOW()", [sessionId])
-    const sessions = rows as Session[]
-    return sessions.length > 0 ? sessions[0] : null
+    try {
+      const [rows] = await pool.execute("SELECT * FROM sessions WHERE id = ? AND expiresAt > NOW()", [sessionId])
+      const sessions = rows as Session[]
+      return sessions.length > 0 ? sessions[0] : null
+    } catch (error) {
+      console.error("Error finding session:", error)
+      // If sessions table doesn't exist, return null instead of throwing
+      if ((error as any).code === "ER_NO_SUCH_TABLE") {
+        console.log("Sessions table doesn't exist, user needs to run setup script")
+        return null
+      }
+      throw error
+    }
   },
 
   async delete(sessionId: string): Promise<void> {
-    await pool.execute("DELETE FROM sessions WHERE id = ?", [sessionId])
+    try {
+      await pool.execute("DELETE FROM sessions WHERE id = ?", [sessionId])
+    } catch (error) {
+      console.error("Error deleting session:", error)
+      // Ignore if table doesn't exist
+      if ((error as any).code !== "ER_NO_SUCH_TABLE") {
+        throw error
+      }
+    }
   },
 
   async cleanup(): Promise<void> {
-    await pool.execute("DELETE FROM sessions WHERE expiresAt <= NOW()")
+    try {
+      await pool.execute("DELETE FROM sessions WHERE expiresAt <= NOW()")
+    } catch (error) {
+      console.error("Error cleaning up sessions:", error)
+      // Ignore if table doesn't exist
+      if ((error as any).code !== "ER_NO_SUCH_TABLE") {
+        throw error
+      }
+    }
   },
 }
 
@@ -204,98 +236,34 @@ export const initDatabase = async () => {
   try {
     // Test connection
     await pool.execute("SELECT 1")
-    console.log("Database connection established successfully.")
+    console.log("✅ Database connection established successfully.")
 
-    // Create users table with basic structure first
-    await pool.execute(`
-      CREATE TABLE IF NOT EXISTS users (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        username VARCHAR(50) NOT NULL,
-        email VARCHAR(100) NOT NULL UNIQUE,
-        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-      )
-    `)
+    // Check if tables exist
+    const [tables] = await pool.execute("SHOW TABLES")
+    const tableNames = (tables as any[]).map((row) => Object.values(row)[0])
 
-    // Add missing columns to users table
-    const userColumnsToAdd = [
-      { name: "password", definition: 'VARCHAR(255) NOT NULL DEFAULT "defaultpassword"' },
-      { name: "isOnline", definition: "BOOLEAN DEFAULT false" },
-      { name: "lastSeen", definition: "DATETIME DEFAULT CURRENT_TIMESTAMP" },
-    ]
+    console.log("Existing tables:", tableNames)
 
-    for (const column of userColumnsToAdd) {
-      try {
-        const [columns] = await pool.execute(
-          `
-          SELECT COLUMN_NAME 
-          FROM INFORMATION_SCHEMA.COLUMNS 
-          WHERE TABLE_SCHEMA = DATABASE() 
-          AND TABLE_NAME = 'users' 
-          AND COLUMN_NAME = ?
-        `,
-          [column.name],
-        )
-
-        if ((columns as any[]).length === 0) {
-          console.log(`Adding ${column.name} column to users table...`)
-          await pool.execute(`ALTER TABLE users ADD COLUMN ${column.name} ${column.definition}`)
-          console.log(`${column.name} column added successfully.`)
-        }
-      } catch (error) {
-        console.error(`Error adding ${column.name} column:`, error)
-      }
+    if (tableNames.length === 0) {
+      console.log("⚠️  No tables found! Please run the database setup script.")
+      console.log("📋 Go to http://localhost:3000/setup to create tables automatically")
+      return
     }
 
-    // Create messages table with correct structure (no username column)
-    await pool.execute(`
-      CREATE TABLE IF NOT EXISTS messages (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        content TEXT NOT NULL,
-        userId INT NOT NULL DEFAULT 1,
-        messageType ENUM('text', 'image', 'file') DEFAULT 'text',
-        isRead BOOLEAN DEFAULT false,
-        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-      )
-    `)
+    // Check for required tables
+    const requiredTables = ["users", "messages", "sessions"]
+    const missingTables = requiredTables.filter((table) => !tableNames.includes(table))
 
-    // Remove username column if it exists (it shouldn't be in messages table)
-    try {
-      const [columns] = await pool.execute(
-        `
-        SELECT COLUMN_NAME 
-        FROM INFORMATION_SCHEMA.COLUMNS 
-        WHERE TABLE_SCHEMA = DATABASE() 
-        AND TABLE_NAME = 'messages' 
-        AND COLUMN_NAME = 'username'
-      `,
-      )
-
-      if ((columns as any[]).length > 0) {
-        console.log("Removing username column from messages table...")
-        await pool.execute("ALTER TABLE messages DROP COLUMN username")
-        console.log("Username column removed successfully.")
-      }
-    } catch (error) {
-      console.error("Error removing username column:", error)
+    if (missingTables.length > 0) {
+      console.log(`⚠️  Missing tables: ${missingTables.join(", ")}`)
+      console.log("📋 Go to http://localhost:3000/setup to create missing tables")
+      return
     }
 
-    // Create sessions table
-    await pool.execute(`
-      CREATE TABLE IF NOT EXISTS sessions (
-        id VARCHAR(255) PRIMARY KEY,
-        userId INT NOT NULL,
-        username VARCHAR(50) NOT NULL,
-        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-        expiresAt DATETIME NOT NULL,
-        FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
-      )
-    `)
-
-    console.log("Database tables created/updated successfully.")
+    console.log("✅ All required tables exist.")
   } catch (error) {
-    console.error("Unable to connect to the database:", error)
+    console.error("❌ Database initialization error:", error)
+    throw error
   }
 }
 
