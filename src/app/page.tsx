@@ -54,7 +54,7 @@ export default function HomePage() {
                 </Button>
               </Link>
               <Link href="/register">
-                <Button className="px-6">Get Started</Button>
+                <Button className="px-6 text-black border">Get Started</Button>
               </Link>
             </div>
           </div>
@@ -75,7 +75,7 @@ export default function HomePage() {
 
           <div className="flex flex-col sm:flex-row gap-4 justify-center mb-16">
             <Link href="/register">
-              <Button size="lg" className="px-8 py-3 text-lg">
+              <Button size="lg" className="px-8 py-3 text-lg text-black border">
                 Start Chatting Now
               </Button>
             </Link>
@@ -94,7 +94,7 @@ export default function HomePage() {
               <div className="mx-auto w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center mb-4">
                 <MessageCircle className="h-6 w-6 text-blue-600" />
               </div>
-              <CardTitle className="text-xl">Real-time Messaging</CardTitle>
+              <CardTitle className="text-xl text-black">Real-time Messaging</CardTitle>
             </CardHeader>
             <CardContent>
               <p className="text-gray-600">
@@ -108,7 +108,7 @@ export default function HomePage() {
               <div className="mx-auto w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center mb-4">
                 <Users className="h-6 w-6 text-green-600" />
               </div>
-              <CardTitle className="text-xl">Online Presence</CardTitle>
+              <CardTitle className="text-xl text-black">Online Presence</CardTitle>
             </CardHeader>
             <CardContent>
               <p className="text-gray-600">
@@ -122,7 +122,7 @@ export default function HomePage() {
               <div className="mx-auto w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center mb-4">
                 <Shield className="h-6 w-6 text-purple-600" />
               </div>
-              <CardTitle className="text-xl">Secure & Private</CardTitle>
+              <CardTitle className="text-xl text-black">Secure & Private</CardTitle>
             </CardHeader>
             <CardContent>
               <p className="text-gray-600">
